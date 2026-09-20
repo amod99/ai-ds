@@ -13,6 +13,7 @@ authors = [{name = "AI-DS contributors"}]
 dependencies = [
   "joblib>=1.3",
   "numpy>=1.24",
+  "openai>=2.0",
   "pandas>=2.0",
   "scikit-learn>=1.3",
 ]

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import joblib
 
-from ai_ds.agent.planner import Planner, RuleBasedPlanner
+from ai_ds.agent.planner import Planner, PlannerError, RuleBasedPlanner
 from ai_ds.agent.state import AgentState, ExperimentRecord
 from ai_ds.config import RunConfig
 from ai_ds.data.loader import load_csv
@@ -60,7 +60,11 @@ class RunController:
         successful = [record for record in records if record.result.ranking_score is not None]
         return max(
             successful,
-            key=lambda record: record.result.ranking_score or float("-inf"),
+            key=lambda record: (
+                record.result.ranking_score
+                if record.result.ranking_score is not None
+                else float("-inf")
+            ),
             default=None,
         )
 
@@ -85,6 +89,14 @@ class RunController:
             store.set_metadata("config", self.config.serializable())
             store.set_metadata("profile", profile.to_dict())
             store.set_metadata("problem", problem.to_dict())
+            store.set_metadata(
+                "planner",
+                {
+                    "type": type(self.planner).__name__,
+                    "model": getattr(self.planner, "model", None),
+                    "reasoning_effort": getattr(self.planner, "reasoning_effort", None),
+                },
+            )
             store.record_event({"type": "run_started", "dataset_hash": dataset.sha256})
 
             while True:
@@ -118,8 +130,28 @@ class RunController:
                         0, self.config.max_runtime_minutes * 60 - elapsed
                     ),
                 )
-                action = self.planner.choose(state)
-                action.validate(problem.task_type)
+                try:
+                    action = self.planner.choose(state)
+                    action.validate(problem.task_type)
+                except (PlannerError, TypeError, ValueError) as exc:
+                    stop_reason = f"Planner failure: {type(exc).__name__}: {exc}"
+                    store.record_event(
+                        {
+                            "type": "planner_failure",
+                            "error": stop_reason,
+                            "state": state.compact(),
+                            "planner": getattr(self.planner, "last_decision_metadata", {}),
+                        }
+                    )
+                    break
+                store.record_event(
+                    {
+                        "type": "planner_decision",
+                        "action": action.to_dict(),
+                        "state": state.compact(),
+                        "planner": getattr(self.planner, "last_decision_metadata", {}),
+                    }
+                )
                 if action.action == "stop":
                     stop_reason = f"Planner stopped: {action.reason or action.hypothesis or 'no reason supplied'}"
                     store.record_event({"type": "planner_stop", "action": action.to_dict()})

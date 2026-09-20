@@ -18,13 +18,29 @@ pip install -e ".[dev]"
 
 ai-ds profile examples/datasets/customer_churn.csv
 ai-ds train examples/datasets/customer_churn.csv --target churn
+
+# PowerShell (use `export OPENAI_API_KEY=...` on macOS/Linux)
+$env:OPENAI_API_KEY = "your-api-key"
 ai-ds run examples/datasets/customer_churn.csv --target churn --max-experiments 8
 ```
 
-`run` uses the default bounded rule-based planner. Applications can supply an
-`LLMPlanner` callback that returns the same validated action schema; it receives only
-the compact state (profile summary, problem, experiment history, budget), never the raw
-dataset or filesystem access.
+`run` uses the OpenAI Responses API planner by default. It sends only compact dataset
+statistics, experiment history, the current best result, and remaining budget—never raw
+rows. The response must match a strict JSON Schema and then passes an independent semantic
+validator before the deterministic experiment engine can execute it.
+
+The default model is `gpt-5.6-luna`. Override it with `--llm-model` or
+`AI_DS_LLM_MODEL`; use `--planner rule-based` to run the deterministic comparison planner:
+
+```bash
+ai-ds run data.csv --target label --llm-model gpt-5.6-luna
+ai-ds run data.csv --target label --planner rule-based
+```
+
+The OpenAI request uses `store=False`, has no tools, retries invalid decisions within a
+small configured bound, and persists the response ID, token usage, validation errors, and
+accepted structured action in the run trajectory. `CallbackPlanner` remains available for
+custom provider integrations and evaluation harnesses.
 
 ## What a run writes
 
@@ -45,7 +61,7 @@ classification and RMSE for regression), never training performance.
 ## Safety and reproducibility
 
 - Inputs are limited to one CSV and explicit command-line configuration.
-- Dataset hashes, configuration, actions, results, and stop reason are persisted.
+- Dataset hashes, configuration, planner decisions, API usage, results, and stop reason are persisted.
 - Transformations—including target encoding—are fitted inside each CV training fold.
 - The action schema forbids arbitrary code, shell execution, and file access.
 - Experiment count, elapsed time, failure count, and convergence patience are bounded.

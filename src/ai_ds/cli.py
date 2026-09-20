@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-from ai_ds.agent.planner import FixedPlanner, RuleBasedPlanner
+from ai_ds.agent.planner import (
+    DEFAULT_LLM_MODEL,
+    FixedPlanner,
+    LLMPlanner,
+    PlannerError,
+    RuleBasedPlanner,
+)
 from ai_ds.config import RunConfig
 from ai_ds.controller import RunController
 
@@ -49,6 +56,29 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--keep-leakage-risks", action="store_true")
 
 
+def _add_planner_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--planner",
+        choices=["llm", "rule-based"],
+        default="llm",
+        help="Experiment planner (default: llm)",
+    )
+    parser.add_argument(
+        "--llm-model",
+        default=os.environ.get("AI_DS_LLM_MODEL", DEFAULT_LLM_MODEL),
+        help=f"OpenAI Responses API model (default: {DEFAULT_LLM_MODEL})",
+    )
+    parser.add_argument(
+        "--llm-reasoning-effort",
+        choices=["auto", "none", "low", "medium", "high", "xhigh", "max"],
+        default=os.environ.get("AI_DS_LLM_REASONING_EFFORT", "low"),
+        help="Reasoning effort; auto omits the setting (default: low)",
+    )
+    parser.add_argument("--llm-max-output-tokens", type=int, default=2_000)
+    parser.add_argument("--llm-max-retries", type=int, default=2)
+    parser.add_argument("--llm-timeout-seconds", type=float, default=60.0)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ai-ds", description="Bounded, reproducible experimentation for tabular CSV datasets."
@@ -63,8 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
         "train", help="Run the deterministic non-agentic candidate sequence"
     )
     _add_run_arguments(train)
-    run = subcommands.add_parser("run", help="Run the bounded rule-based agent loop")
+    run = subcommands.add_parser("run", help="Run the bounded LLM experiment-planning loop")
     _add_run_arguments(run)
+    _add_planner_arguments(run)
     return parser
 
 
@@ -108,11 +139,25 @@ def main(argv: list[str] | None = None) -> int:
             _print_profile(profile, args.json)
             return 0
         config = _config_from_args(args)
-        planner = FixedPlanner() if args.command == "train" else RuleBasedPlanner()
+        if args.command == "train":
+            planner = FixedPlanner()
+        elif args.planner == "rule-based":
+            planner = RuleBasedPlanner()
+        else:
+            reasoning_effort = (
+                None if args.llm_reasoning_effort == "auto" else args.llm_reasoning_effort
+            )
+            planner = LLMPlanner(
+                model=args.llm_model,
+                reasoning_effort=reasoning_effort,
+                max_output_tokens=args.llm_max_output_tokens,
+                max_retries=args.llm_max_retries,
+                timeout_seconds=args.llm_timeout_seconds,
+            )
         summary = RunController(config, planner=planner).run(args.dataset)
         _print_summary(summary)
         return 0
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, PlannerError, ValueError) as exc:
         print(f"ai-ds: {exc}", file=sys.stderr)
         return 2
 
